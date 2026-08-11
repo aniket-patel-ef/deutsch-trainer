@@ -5,12 +5,6 @@ Android app: Duolingo-style practice for German A1 grammar.
 
 **▶ [aniket-patel-ef.github.io/deutsch-trainer](https://aniket-patel-ef.github.io/deutsch-trainer/)**
 
-> **Pages is not serving yet.** Every build job is cancelled at the infrastructure
-> level before it emits a log, with `.nojekyll` present and all files uploaded. The
-> same `legacy` / `main` / `/` configuration builds fine on my other Pages repo, so
-> this looks like a GitHub-side problem rather than one in this repo. Until it
-> clears, run it locally — see below.
-
 Same content, same rules, same design as the app — 157 lessons, 7,850 questions and
 a 10,000-word vocabulary trainer. The interface is in English; only the material you
 practise is German.
