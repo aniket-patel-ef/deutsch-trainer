@@ -6,6 +6,7 @@ import { loadLesson } from './content.js';
 import { expectedFor, gradeAnswer, selectQuestions, shuffle } from './engine.js';
 import { questionStatsFor, recordSession, MAX_CROWNS } from './storage.js';
 import { germanVoiceAvailable, recognitionAvailable, speak, startListening, stopSpeaking, SLOW_RATE } from './speech.js';
+import { checkGerman, describeIssues } from './grammarcheck.js';
 
 const INSTRUCTION = {
   ARTICLE: 'Which article?',
@@ -46,6 +47,7 @@ export async function startLesson({ levelId, lessonId, onExit }) {
     firstAttempts: new Map(),  // questionId -> first outcome; this is what scores the run
     retryQueue: [],
     alreadyRetried: new Set(),
+    checking: false,           // a writing answer is out at the grammar checker
     startedAt: Date.now(),
   };
 
@@ -59,15 +61,45 @@ export async function startLesson({ levelId, lessonId, onExit }) {
     session.retryQueue.push(q);
   }
 
-  function submit() {
+  async function submit() {
     const q = current();
-    if (!q || session.grade) return;
-    const grade = gradeAnswer(q, session.pending);
+    if (!q || session.grade || session.checking) return;
+
+    let grade = gradeAnswer(q, session.pending);
+
+    // Writing is the one type whose correctness needs more than string matching.
+    // The local grade has already confirmed the task's required words are there;
+    // LanguageTool decides whether what surrounds them is actual German.
+    if (q.type === 'WRITE' && grade.correct) {
+      session.checking = true;
+      render();
+      grade = await gradeWritingGrammar(q, String(session.pending ?? ''), grade);
+      session.checking = false;
+    }
+
     session.attempts.push([q.id, grade.correct]);
     if (!session.firstAttempts.has(q.id)) session.firstAttempts.set(q.id, grade.correct);
     if (!grade.correct) queueRetry(q);
     session.grade = grade;
     render();
+  }
+
+  async function gradeWritingGrammar(q, text, localGrade) {
+    const { checked, issues } = await checkGerman(text);
+    if (!checked) {
+      return { ...localGrade, note: 'Grammar check unavailable — marked on the required words only.' };
+    }
+    const failing = issues.filter((i) => i.fails);
+    if (failing.length) {
+      return {
+        correct: false,
+        score: 0,
+        expected: localGrade.expected,
+        note: `${describeIssues(failing)}`,
+      };
+    }
+    const advisory = issues.length ? `  Also worth a look — ${describeIssues(issues)}` : '';
+    return { ...localGrade, note: `Grammar checks out.${advisory}` };
   }
 
   function skip() {
@@ -227,26 +259,44 @@ export async function startLesson({ levelId, lessonId, onExit }) {
       umlautRow(() => area));
   }
 
+  /**
+   * Speaking is the one type whose answer the learner cannot type, so the only
+   * thing that may stage an answer here is a transcript from the recognizer.
+   * There used to be a "Mark as spoken" button that staged `target` itself —
+   * which the grader then compared against `target` and always passed, so the
+   * exercise could be cleared without saying a word. Use Skip instead: it is
+   * honest about not having answered.
+   */
   function speakBody(q) {
     const target = q.targetText || q.prompt || '';
-    const status = el('div', { class: 'muted small center', text: recognitionAvailable()
+    const available = recognitionAvailable();
+    const status = el('div', { class: 'muted small center', text: available
       ? 'Tap the mic and say it'
-      : 'Speech recognition is not available in this browser — Chrome or Edge support it.' });
-    const mic = el('button', { class: 'mic', title: 'Start recording', 'aria-label': 'Start recording' }, '🎤');
+      : 'Speech recognition needs Chrome or Edge. Skip this one, or open the site there.' });
+    const mic = el('button', {
+      class: 'mic', title: 'Start recording', 'aria-label': 'Start recording',
+      disabled: !available,
+    }, '🎤');
 
     let recognizer = null;
     mic.addEventListener('click', () => {
       if (session.grade) return;
       if (recognizer) { recognizer.stop(); recognizer = null; return; }
+
+      // A fresh attempt invalidates the previous transcript — otherwise a failed
+      // retry silently submits whatever the recognizer heard last time.
+      session.pending = undefined;
+      syncFooter();
+
       mic.classList.add('mic--listening');
       status.textContent = 'Listening…';
       recognizer = startListening({
         onResult: (transcript) => {
           session.pending = transcript;
-          status.textContent = `“${transcript}”`;
+          status.textContent = `“${transcript}” — tap Check, or the mic to try again`;
           syncFooter();
         },
-        onError: (err) => { status.textContent = err.message; },
+        onError: (err) => { status.textContent = err.message; syncFooter(); },
         onEnd: () => { mic.classList.remove('mic--listening'); recognizer = null; },
       });
       if (!recognizer) mic.classList.remove('mic--listening');
@@ -254,14 +304,7 @@ export async function startLesson({ levelId, lessonId, onExit }) {
 
     return el('div', {},
       promptBubble({ ...q, prompt: target, hint: q.hint }),
-      el('div', { class: 'mic-wrap' }, mic, status),
-      el('button', {
-        class: 'btn btn--ghost', style: 'margin-top:8px',
-        disabled: !!session.grade,
-        onclick: () => { session.pending = target; toast('Marked as spoken.'); syncFooter(); },
-      }, 'Mark as spoken'),
-      el('div', { class: 'small muted center', style: 'margin-top:6px',
-        text: 'Only use this if you cannot speak right now.' }));
+      el('div', { class: 'mic-wrap' }, mic, status));
   }
 
   function matchBody(q) {
@@ -363,11 +406,14 @@ export async function startLesson({ levelId, lessonId, onExit }) {
     }
     return el('div', { class: 'footer' },
       el('div', { class: 'row' },
-        el('button', { class: 'btn btn--ghost', style: 'flex:1', onclick: skip }, 'Skip'),
+        el('button', {
+          class: 'btn btn--ghost', style: 'flex:1',
+          disabled: session.checking, onclick: skip,
+        }, 'Skip'),
         el('button', {
           class: 'btn', style: 'flex:1.4', id: 'check-btn',
-          disabled: !canSubmit(), onclick: submit,
-        }, 'Check')));
+          disabled: !canSubmit() || session.checking, onclick: submit,
+        }, session.checking ? 'Checking your German…' : 'Check')));
   }
 
   // --- render ------------------------------------------------------------
