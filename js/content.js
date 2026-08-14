@@ -99,6 +99,10 @@ export async function vocabBank() {
       rank: e.i,
       concrete: e.c === 1,
       emoji: e.em || '',
+      // Set by tools/build_vocab_emoji.py: this word has a curated picture and may
+      // appear in the picture drill. Not the same as `concrete`, which came from an
+      // automated list and let "der Alt" and "der Dan" into the drill.
+      picturable: e.pic === 1,
     }));
   }
   return vocabCache;

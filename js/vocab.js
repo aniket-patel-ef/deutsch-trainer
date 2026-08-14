@@ -1,11 +1,11 @@
 // The 10,000-word vocabulary trainer. Mirrors data/vocab/VocabRepository.kt and
-// ui/vocab/: three drills, Leitner-box scheduling, lazy Wikimedia images.
+// ui/vocab/: three drills, Leitner-box scheduling, and a picture drill whose
+// pictures are the curated emoji in the bank rather than a live image search.
 
 import { el, mount, spinner, umlautRow } from './dom.js';
 import { vocabBank } from './content.js';
 import { normalize, shuffle } from './engine.js';
-import { cacheImage, cachedImage, recordVocabAnswer, vocabStat, vocabTotals } from './storage.js';
-import { findImage } from './images.js';
+import { recordVocabAnswer, vocabStat, vocabTotals } from './storage.js';
 import { speak, SLOW_RATE } from './speech.js';
 
 const ROUND_SIZE = 10;
@@ -36,44 +36,65 @@ function modesFor(drill) {
 }
 
 const validFor = (mode, w) => {
-  if (mode === 'IMAGE_TO_WORD') return w.concrete && w.pos === 'noun';
+  if (mode === 'IMAGE_TO_WORD') return w.picturable;
   if (mode === 'ARTICLE_ONLY') return w.pos === 'noun' && !!w.article;
   return true;
 };
 
+/** At most this share of a round may be words you have already met. */
+const MAX_REVIEW_SHARE = 0.5;
+
 /**
- * Picks the round. Due words first, never-seen last, hardest boxes first — the
- * SQL ORDER BY from VocabDao, expressed in JS.
+ * Picks the round: due reviews first, then never-seen words, hardest boxes first
+ * — the SQL ORDER BY from VocabDao, expressed in JS.
+ *
+ * Reviews are capped at half the round. Sorting reviews ahead of new words is
+ * right, but on its own it meant a handful of words you had missed filled every
+ * round and the other 1,100-odd never appeared.
  */
-function pickWords(bank, { nounsOnly, imagesOnly, size }) {
+export function pickWords(bank, { nounsOnly, imagesOnly, size }) {
   const now = Date.now();
   const eligible = bank.filter((w) => {
     if (nounsOnly && w.pos !== 'noun') return false;
-    if (imagesOnly && !w.concrete) return false;
+    if (imagesOnly && !w.picturable) return false;
     const st = vocabStat(w.id);
     return !st || (st.dueAt ?? 0) <= now;
   });
 
-  eligible.sort((a, b) => {
+  const byUrgency = (a, b) => {
     const sa = vocabStat(a.id), sb = vocabStat(b.id);
-    const seenA = sa ? 0 : 1, seenB = sb ? 0 : 1;
-    if (seenA !== seenB) return seenA - seenB;              // reviews before new words
     const boxA = sa?.box ?? 0, boxB = sb?.box ?? 0;
     if (boxA !== boxB) return boxA - boxB;                  // weakest boxes first
     const dueA = sa?.dueAt ?? Infinity, dueB = sb?.dueAt ?? Infinity;
     if (dueA !== dueB) return dueA - dueB;
     return a.rank - b.rank;                                // then by frequency
-  });
+  };
 
-  return shuffle(eligible.slice(0, size * 3)).slice(0, size);
+  const reviews = eligible.filter((w) => vocabStat(w.id)).sort(byUrgency);
+  const fresh = eligible.filter((w) => !vocabStat(w.id)).sort(byUrgency);
+
+  const reviewQuota = Math.min(reviews.length, Math.floor(size * MAX_REVIEW_SHARE));
+  // Widen each side before shuffling so the same urgent words are not simply the
+  // round every time; take from the fresh side whatever reviews leave unfilled.
+  const picked = [
+    ...shuffle(reviews.slice(0, Math.max(reviewQuota * 3, reviewQuota))).slice(0, reviewQuota),
+    ...shuffle(fresh.slice(0, size * 3)).slice(0, size - reviewQuota),
+  ];
+
+  // A short bank (few concrete nouns left, say) can leave the round under size.
+  if (picked.length < size) {
+    const used = new Set(picked.map((w) => w.id));
+    picked.push(...shuffle(eligible.filter((w) => !used.has(w.id))).slice(0, size - picked.length));
+  }
+  return shuffle(picked);
 }
 
 function buildPrompt(word, mode, bank) {
-  // In the picture round the distractors are concrete too, otherwise an abstract
-  // option next to a photograph gives the answer away.
-  const concreteOnly = mode === 'IMAGE_TO_WORD';
+  // In the picture round the distractors are picturable too, otherwise an abstract
+  // option next to a picture gives the answer away.
+  const pictureRound = mode === 'IMAGE_TO_WORD';
   const distractorPool = bank.filter((w) =>
-    w.pos === word.pos && w.id !== word.id && (!concreteOnly || w.concrete));
+    w.pos === word.pos && w.id !== word.id && (!pictureRound || w.picturable));
   const pick3 = () => shuffle(distractorPool).slice(0, 3);
 
   let options = [], answerIndex = -1;
@@ -148,16 +169,17 @@ export async function startVocabDrill({ drill, onExit }) {
   const state = { index: 0, selected: -1, typed: '', answered: null, expected: '', correct: 0, imageUrl: undefined };
   const current = () => prompts[state.index];
 
-  async function loadImage() {
+  /**
+   * Nothing to load: every picture-drill word carries its own emoji, so the
+   * picture is already in the bank. This used to fetch a photo from Wikimedia and
+   * that is what produced the pictures that made no sense — a geology diagram for
+   * "der Zug", an 1886 three-wheeler for "das Auto", an iguana for "der Kopf".
+   * Any image cached by that old lookup is dropped here so it cannot be shown.
+   */
+  function loadImage() {
     const p = current();
     if (!p || p.mode !== 'IMAGE_TO_WORD') return;
-    const cached = cachedImage(p.word.id);
-    if (cached !== undefined) { state.imageUrl = cached || null; render(); return; }
-    state.imageUrl = undefined;   // undefined = still resolving
-    render();
-    const url = await findImage(p.word.german, p.word.english);
-    cacheImage(p.word.id, url);
-    if (current()?.word.id === p.word.id) { state.imageUrl = url; render(); }
+    state.imageUrl = null;
   }
 
   function check() {
@@ -191,13 +213,9 @@ export async function startVocabDrill({ drill, onExit }) {
 
   function panel(p) {
     if (p.mode === 'IMAGE_TO_WORD') {
-      const inner = state.imageUrl === undefined
-        ? spinner()
-        : state.imageUrl
-          ? el('img', { src: state.imageUrl, alt: '', loading: 'lazy',
-              onerror: (e) => { e.target.replaceWith(fallback(p)); } })
-          : fallback(p);
-      return el('div', { class: 'image-panel' }, inner);
+      // The emoji is the picture. pickWords only offers words that have one, so
+      // there is nothing to fetch, nothing to wait for and nothing to get wrong.
+      return el('div', { class: 'image-panel' }, fallback(p));
     }
     if (p.mode === 'LISTEN_TYPE') {
       return el('div', { class: 'audio-controls' },

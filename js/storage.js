@@ -138,7 +138,20 @@ export function setDailyGoal(xp) {
 
 // --- vocabulary ---------------------------------------------------------
 
-const BOX_INTERVALS_DAYS = [0, 1, 2, 4, 8, 16];
+/**
+ * Leitner intervals. Box 0 is twenty minutes rather than zero: at zero a missed
+ * word is due again the instant you answer it, and since reviews are picked ahead
+ * of new words it came back in the very next round and every round after, which
+ * made the drill feel like it only knew a handful of words.
+ */
+const BOX_INTERVALS_MS = [
+  20 * 60 * 1000,
+  1 * DAY_MS,
+  2 * DAY_MS,
+  4 * DAY_MS,
+  8 * DAY_MS,
+  16 * DAY_MS,
+];
 
 export const vocabStat = (wordId) => state.vocabStats[wordId] ?? null;
 
@@ -152,7 +165,7 @@ export function recordVocabAnswer(wordId, correct) {
     timesWrong: prev.timesWrong + (correct ? 0 : 1),
     box,
     lastSeenAt: now,
-    dueAt: now + BOX_INTERVALS_DAYS[box] * DAY_MS,
+    dueAt: now + BOX_INTERVALS_MS[box],
   };
   persist();
 }

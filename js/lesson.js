@@ -3,7 +3,7 @@
 
 import { el, mount, spinner, toast, umlautRow } from './dom.js';
 import { loadLesson } from './content.js';
-import { expectedFor, gradeAnswer, selectQuestions, shuffle } from './engine.js';
+import { expectedFor, gradeAnswer, loadVerbForms, selectQuestions, shuffle } from './engine.js';
 import { questionStatsFor, recordSession, MAX_CROWNS } from './storage.js';
 import { germanVoiceAvailable, recognitionAvailable, speak, startListening, stopSpeaking, SLOW_RATE } from './speech.js';
 import { checkGerman, describeIssues } from './grammarcheck.js';
@@ -64,6 +64,10 @@ export async function startLesson({ levelId, lessonId, onExit }) {
   async function submit() {
     const q = current();
     if (!q || session.grade || session.checking) return;
+
+    // The verb list has to be in memory before the sentence is graded, not after:
+    // without it the "needs a verb" rule silently passes everything.
+    if (q.type === 'WRITE') await loadVerbForms();
 
     let grade = gradeAnswer(q, session.pending);
 

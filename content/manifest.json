@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "levels": [
+    {
+      "id": "a1",
+      "title": "A1",
+      "subtitle": "Grundstufe",
+      "order": 1,
+      "lektionFiles": [
+        "content/a1/lektion_01.json",
+        "content/a1/lektion_02.json",
+        "content/a1/lektion_03.json",
+        "content/a1/lektion_04.json",
+        "content/a1/lektion_05.json",
+        "content/a1/lektion_06.json",
+        "content/a1/lektion_07.json",
+        "content/a1/lektion_08.json"
+      ]
+    }
+  ]
+}
