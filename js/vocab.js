@@ -44,6 +44,9 @@ const validFor = (mode, w) => {
 /** At most this share of a round may be words you have already met. */
 const MAX_REVIEW_SHARE = 0.5;
 
+/** How many rounds' worth of not-yet-due words the never-empty fallback draws from. */
+const FALLBACK_SPREAD = 12;
+
 /**
  * Picks the round: due reviews first, then never-seen words, hardest boxes first
  * — the SQL ORDER BY from VocabDao, expressed in JS.
@@ -54,9 +57,13 @@ const MAX_REVIEW_SHARE = 0.5;
  */
 export function pickWords(bank, { nounsOnly, imagesOnly, size }) {
   const now = Date.now();
-  const eligible = bank.filter((w) => {
+  const inDrill = (w) => {
     if (nounsOnly && w.pos !== 'noun') return false;
     if (imagesOnly && !w.picturable) return false;
+    return true;
+  };
+  const candidates = bank.filter(inDrill);
+  const eligible = candidates.filter((w) => {
     const st = vocabStat(w.id);
     return !st || (st.dueAt ?? 0) <= now;
   });
@@ -81,10 +88,21 @@ export function pickWords(bank, { nounsOnly, imagesOnly, size }) {
     ...shuffle(fresh.slice(0, size * 3)).slice(0, size - reviewQuota),
   ];
 
-  // A short bank (few concrete nouns left, say) can leave the round under size.
+  // Nothing due is not a reason to refuse to practise. The scheduler decides what
+  // is *best* to review, not whether the learner is allowed a round at all: with
+  // everything scheduled for later the drill used to dead-end on "Nothing due
+  // right now", which is what it did after 29 words. Fall back to the words
+  // closest to due, so a drill only ever ends when its pool is genuinely empty.
   if (picked.length < size) {
     const used = new Set(picked.map((w) => w.id));
-    picked.push(...shuffle(eligible.filter((w) => !used.has(w.id))).slice(0, size - picked.length));
+    const nextBest = candidates
+      .filter((w) => !used.has(w.id))
+      .sort((a, b) => (vocabStat(a.id)?.dueAt ?? 0) - (vocabStat(b.id)?.dueAt ?? 0));
+    // Shuffle a wide slice rather than taking the head. Answering a round schedules
+    // every word in it at almost the same moment, so a straight take by dueAt
+    // returned very nearly the same ten words each time — the repetition the
+    // picture drill had before, reintroduced through the back door.
+    picked.push(...shuffle(nextBest.slice(0, size * FALLBACK_SPREAD)).slice(0, size - picked.length));
   }
   return shuffle(picked);
 }
@@ -151,10 +169,12 @@ export async function startVocabDrill({ drill, onExit }) {
     size: ROUND_SIZE,
   });
 
+  // pickWords always returns a round when the drill's pool is non-empty, so this
+  // only fires when the bank itself has no word matching the filter.
   if (!words.length) {
     mount(el('div', { class: 'card' },
-      el('h2', { text: 'Nothing due right now' }),
-      el('p', { class: 'muted', text: 'Every word in this drill is scheduled for later. Try another drill.' }),
+      el('h2', { text: 'This drill has no words yet' }),
+      el('p', { class: 'muted', text: 'Reload the page to pick up the latest word list, then try again.' }),
       el('button', { class: 'btn', style: 'margin-top:16px', onclick: onExit }, 'Back')));
     return;
   }

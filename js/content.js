@@ -9,8 +9,15 @@ let indexCache = null;
 const lektionCache = new Map();
 const nodeCache = new Map();
 
+// 'no-cache' revalidates rather than re-downloading: the browser still keeps the
+// bytes and GitHub Pages answers an unchanged file with a 304. This used to be
+// 'force-cache', which serves the cached copy *without ever revalidating* — so
+// when the vocab bank gained its `pic` field, browsers that already held the old
+// file kept it forever and read every word as not-picturable, emptying the
+// picture drill. In-memory caches above make this at most one request per asset
+// per page load.
 async function getJson(path) {
-  const res = await fetch(BASE + path, { cache: 'force-cache' });
+  const res = await fetch(BASE + path, { cache: 'no-cache' });
   if (!res.ok) throw new Error(`Could not load ${path} (${res.status})`);
   return res.json();
 }
